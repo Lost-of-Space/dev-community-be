@@ -1,0 +1,16 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - '3030:3000'
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    driver: bridge
