@@ -3,8 +3,8 @@ import mongoose from 'mongoose';//for db connection
 import 'dotenv/config'
 import bcrypt from 'bcryptjs'; //for hashing
 import { nanoid } from 'nanoid';//id generator
-import jwt from 'jsonwebtoken'
-import cors from 'cors';
+import jwt from 'jsonwebtoken';
+import { config } from "./config.js";
 import admin from "firebase-admin";
 import serviceAccountKey from "./dev-community-7f3b8-firebase-adminsdk-lzctm-9acd813bc6.json" with {type: "json"}
 import { getAuth } from "firebase-admin/auth"
@@ -15,6 +15,7 @@ import Post from './Schema/Post.js';
 import Notification from './Schema/Notification.js';
 import Comment from './Schema/Comment.js';
 
+import cors from 'cors';
 
 const server = express();
 let PORT = 3000;
@@ -27,7 +28,11 @@ let emailRegex = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
 let passwordRegex = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).{6,20}$/;
 
 server.use(express.json());
-server.use(cors());
+
+// Only enable CORS if it's development environment
+if (config.IS_DEV_ENV) {
+  server.use(cors({ origin: 'http://localhost:5173', credentials: true }));
+}
 
 mongoose.connect(process.env.DB_LOCATION, {
   autoIndex: true
@@ -35,7 +40,7 @@ mongoose.connect(process.env.DB_LOCATION, {
 
 
 const verifyJWT = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
+  const authHeader = req.headers['x-authorization'];
   const token = authHeader && authHeader.split(" ")[1];
 
   if (token == null) {
