@@ -237,7 +237,9 @@ server.post("/github-auth", async (req, res) => {
 
 
 /*
+
   Posts
+
 */
 
 // Latest Posts
@@ -431,7 +433,13 @@ server.post("/search-users", (req, res) => {
     });
 });
 
-//Get user profile
+/*
+
+  User Profile
+
+*/
+
+
 server.post("/get-profile", (req, res) => {
 
   let { username } = req.body;
@@ -446,9 +454,83 @@ server.post("/get-profile", (req, res) => {
     });
 })
 
+server.post("/follow-user", verifyJWT, async (req, res) => {
+  try {
+    const followerId = req.user;
+    const { username, isFollowed } = req.body;
+
+    const targetUser = await User.findOne({ "personal_info.username": username });
+    if (!targetUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const targetUserId = targetUser._id;
+
+    if (followerId.toString() === targetUserId.toString()) {
+      return res.status(400).json({ error: "You cannot follow yourself" });
+    }
+
+    const updateOps = !isFollowed
+      ? { $addToSet: { following: targetUserId } }
+      : { $pull: { following: targetUserId } };
+
+    const reverseUpdateOps = !isFollowed
+      ? { $addToSet: { followers: followerId } }
+      : { $pull: { followers: followerId } };
+
+    await Promise.all([
+      User.findByIdAndUpdate(followerId, updateOps),
+      User.findByIdAndUpdate(targetUserId, reverseUpdateOps),
+    ]);
+
+    return res.status(200).json({ followed: !isFollowed });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+server.get("/follow-status/:username", verifyJWT, async (req, res) => {
+  try {
+    const followerId = req.user;
+    const username = req.params.username;
+
+    const targetUser = await User.findOne({ "personal_info.username": username });
+    if (!targetUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const isFollowing = targetUser.followers.includes(followerId);
+    return res.status(200).json({ isFollowing });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+server.post('/get-users-by-id', async (req, res) => {
+  try {
+    const { user_ids } = req.body;
+    if (!Array.isArray(user_ids)) return res.status(400).json({ error: "user_ids must be an array" });
+
+    const users = await User.find({ _id: { $in: user_ids } }, {
+      personal_info: 1,
+      account_info: 1,
+      social_links: 1
+    });
+
+    res.json({ users });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 
-// Create Post
+
+/*
+
+  Post Interactions
+
+*/
+
 server.post('/create-post', verifyJWT, (req, res) => {
 
   let authorId = req.user;
@@ -500,11 +582,33 @@ server.post('/create-post', verifyJWT, (req, res) => {
 
       // test if post draft == true or false, and updating total posts count
       let incrementVal = draft ? 0 : 1;
-      User.findOneAndUpdate({ _id: authorId }, { $inc: { "account_info.total_posts": incrementVal }, $push: { "posts": post._id } })
+      User.findOneAndUpdate(
+        { _id: authorId },
+        {
+          $inc: { "account_info.total_posts": incrementVal },
+          $push: { posts: post._id }
+        },
+        { new: true }
+      )
+        .then(async user => {
+          if (!draft) {
+            const followerIds = user.followers;
 
-        .then(user => {
-          return res.status(200).json({ id: post.post_id })
+            const notifications = followerIds.map(followerId => ({
+              type: "post",
+              post: post._id,
+              notification_for: followerId,
+              user: authorId
+            }));
+
+            if (notifications.length) {
+              await Notification.insertMany(notifications);
+            }
+          }
+
+          return res.status(200).json({ id: post.post_id });
         })
+
 
         .catch(err => {
           return res.status(500).json({ error: "Failed tp update total posts number" })
@@ -562,6 +666,12 @@ server.post("/isliked-by-user", verifyJWT, (req, res) => {
       return res.status(500).json({ error: err.message })
     })
 })
+
+/*
+
+  Comments
+
+*/
 
 server.post("/add-comment", verifyJWT, (req, res) => {
   let user_id = req.user;
@@ -902,6 +1012,7 @@ server.post("/all-notifications-count", verifyJWT, (req, res) => {
     })
 
 })
+
 
 /*
 
