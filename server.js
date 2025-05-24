@@ -52,6 +52,10 @@ const verifyJWT = (req, res, next) => {
       return res.status(403).json({ error: "Access token is invalid." })
     }
 
+    if (user.blocked) {
+      return res.status(403).json({ error: "You do not have permissions, because Your account have been blocked." });
+    }
+
     req.user = user.id
     req.admin = user.admin
     req.blocked = user.blocked
@@ -1060,24 +1064,42 @@ server.post("/user-written-posts-count", verifyJWT, (req, res) => {
     })
 })
 
-server.post("/delete-post", verifyJWT, (req, res) => {
-  let user_id = req.user;
-  let { post_id } = req.body;
+server.post("/delete-post", verifyJWT, async (req, res) => {
+  try {
+    const user_id = req.user;
+    const isAdmin = req.admin;
+    const { post_id } = req.body;
 
-  Post.findOneAndDelete({ post_id })
-    .then(post => {
-      Notification.deleteMany({ post: post._id })
-        .then(data => console.log('notifications deleted'))
-      Comment.deleteMany({ post_id: post._id })
-        .then(data => console.log('comments deleted'))
-      User.findOneAndUpdate({ _id: user_id }, { $pull: { posts: post._id }, $inc: { "account_info.total_posts": post.draft ? 0 : -1 } })
-        .then(user => console.log('post deleted'))
-      return res.status(200).json({ status: 'done' });
-    })
-    .catch(err => {
-      return res.status(500).json({ error: err.message });
-    })
-})
+    const post = await Post.findOne({ post_id });
+
+    if (!post) {
+      return res.status(404).json({ error: "Post not found" });
+    }
+
+    if (post.author.toString() !== user_id.toString() && !isAdmin) {
+      return res.status(403).json({ error: "You don't have permission to delete this post" });
+    }
+
+    await Promise.all([
+      Post.findOneAndDelete({ post_id }),
+      Notification.deleteMany({ post: post._id }),
+      Comment.deleteMany({ post_id: post._id }),
+      User.findOneAndUpdate(
+        { _id: post.author },
+        {
+          $pull: { posts: post._id },
+          $inc: { "account_info.total_posts": post.draft ? 0 : -1 }
+        }
+      )
+    ]);
+
+    return res.status(200).json({ status: 'done' });
+
+  } catch (err) {
+    console.error("Error deleting post:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 server.post("/get-user-statistics", verifyJWT, async (req, res) => {
   const { days } = req.body;
@@ -1114,7 +1136,6 @@ server.post("/get-user-statistics", verifyJWT, async (req, res) => {
     return res.status(500).json({ error: "Server error" });
   }
 });
-
 
 
 /*
@@ -1202,10 +1223,11 @@ server.post("/get-users-count", verifyJWT, async (req, res) => {
   }
 });
 
-server.patch("/toggle-user-flag", async (req, res) => {
-  const { targetUserId, isAdmin, field } = req.body;
+server.patch("/toggle-user-flag", verifyJWT, async (req, res) => {
+  const { targetUserId, field } = req.body;
+  const requestingUserIsAdmin = req.admin;
 
-  if (!isAdmin) {
+  if (!requestingUserIsAdmin) {
     return res.status(403).json({ error: "Access denied. Only admins can change user flags." });
   }
 
@@ -1217,6 +1239,10 @@ server.patch("/toggle-user-flag", async (req, res) => {
     const targetUser = await User.findById(targetUserId);
     if (!targetUser) {
       return res.status(404).json({ error: "User not found" });
+    }
+
+    if (targetUser._id.toString() === req.user.toString() && field === "admin") {
+      return res.status(403).json({ error: "You cannot change your own admin status." });
     }
 
     targetUser[field] = !targetUser[field];

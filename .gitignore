@@ -130,3 +130,5 @@ dist
 .pnp.*
 
 dev-community-7f3b8-firebase-adminsdk-lzctm-9acd813bc6.json
+
+requests.rest
