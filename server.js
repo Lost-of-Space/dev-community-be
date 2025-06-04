@@ -14,6 +14,7 @@ import User from './Schema/User.js';
 import Post from './Schema/Post.js';
 import Notification from './Schema/Notification.js';
 import Comment from './Schema/Comment.js';
+import Report from './Schema/Report.js';
 
 import cors from 'cors';
 
@@ -311,9 +312,9 @@ server.get("/popular-posts", (req, res) => {
 
 //Get Posts
 server.post("/get-post", (req, res) => {
-  let { post_id, draft, mode } = req.body;
+  let { post_id, draft, mode, count_view } = req.body;
 
-  let incrementVal = mode != 'edit' ? 1 : 0;
+  let incrementVal = (mode != 'edit' && count_view) ? 1 : 0;
 
   Post.findOneAndUpdate({ post_id }, { $inc: { "activity.total_reads": incrementVal } })
     .populate("author", "personal_info.fullname personal_info.username personal_info.profile_img")
@@ -670,6 +671,44 @@ server.post("/isliked-by-user", verifyJWT, (req, res) => {
       return res.status(500).json({ error: err.message })
     })
 })
+
+//Report post
+server.post("/report-post", verifyJWT, async (req, res) => {
+  const user_id = req.user;
+  const { post_id, report_text } = req.body;
+
+  if (!report_text?.trim()) {
+    return res.status(400).json({ error: 'Report text cannot be empty.' });
+  }
+
+  try {
+    const post = await Post.findOne({ post_id });
+    if (!post) {
+      return res.status(404).json({ error: 'Post not found.' });
+    }
+
+    const existingReport = await Report.findOne({ from: user_id, post_id: post._id });
+    if (existingReport) {
+      return res.status(409).json({ error: 'You have already reported this post.' });
+    }
+
+    const report = new Report({
+      from: user_id,
+      post_id: post._id,
+      text: report_text.trim()
+    });
+
+    await report.save();
+
+    return res.status(201).json({
+      message: 'Report submitted successfully',
+      report_id: report._id
+    });
+  } catch (err) {
+    console.error('Error creating report:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 /*
 
@@ -1150,7 +1189,7 @@ server.post("/get-users", verifyJWT, async (req, res) => {
     isAdmin, sortField, sortOrder
   } = req.body;
 
-  const maxLimit = 6;
+  const maxLimit = 5;
   let skipDocs = (page - 1) * maxLimit;
 
   if (!isAdmin) {
@@ -1428,6 +1467,192 @@ server.post("/get-posts-count-adm", verifyJWT, async (req, res) => {
   } catch (err) {
     console.error(err.message);
     return res.status(500).json({ error: err.message });
+  }
+});
+
+server.post("/get-reports", verifyJWT, async (req, res) => {
+  let {
+    page, filter, query, reportFilter = {}, deletedDocCount,
+    isAdmin, sortField, sortOrder
+  } = req.body;
+
+  const maxLimit = 5;
+  let skipDocs = (page - 1) * maxLimit;
+
+  if (!isAdmin) {
+    return res.status(403).json({ error: "Access denied." });
+  }
+
+  let findQuery = {};
+
+  if (filter !== "all" && query) {
+    if (query.startsWith("@")) {
+      const username = query.substring(1);
+      const users = await User.find({
+        "personal_info.username": { $regex: username, $options: "i" }
+      }).select("_id");
+
+      const userIds = users.map(user => user._id);
+
+      if (userIds.length) {
+        findQuery["from"] = { $in: userIds };
+      } else {
+        return res.status(200).json({ reports: [] });
+      }
+    } else {
+      const posts = await Post.find({
+        title: { $regex: query, $options: "i" }
+      }).select("_id");
+
+      const postIds = posts.map(post => post._id);
+
+      if (postIds.length) {
+        findQuery["post_id"] = { $in: postIds };
+      } else {
+        return res.status(200).json({ reports: [] });
+      }
+    }
+  }
+
+  let statusFilters = [];
+  if (reportFilter.pending) statusFilters.push({ status: "pending" });
+  if (reportFilter.reviewed) statusFilters.push({ status: "reviewed" });
+  if (reportFilter.rejected) statusFilters.push({ status: "rejected" });
+
+  if (statusFilters.length > 0) {
+    findQuery["$or"] = statusFilters;
+  }
+
+  if (deletedDocCount) {
+    skipDocs -= deletedDocCount;
+  }
+
+  try {
+    const reports = await Report.find(findQuery)
+      .skip(skipDocs)
+      .limit(maxLimit)
+      .populate({
+        path: 'from',
+        select: 'personal_info.username personal_info.profile_img'
+      })
+      .populate({
+        path: 'post_id',
+        select: 'title post_id'
+      })
+      .sort({ [sortField]: sortOrder === "asc" ? 1 : -1 });
+
+    const transformedReports = reports.map(report => ({
+      ...report.toObject(),
+      from: {
+        username: report.from.personal_info.username,
+        profile_img: report.from.personal_info.profile_img
+      },
+      post_id: {
+        title: report.post_id.title,
+        post_id: report.post_id.post_id
+      }
+    }));
+
+    return res.status(200).json({ reports: transformedReports });
+  } catch (err) {
+    console.error(err.message);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+server.post("/get-reports-count", verifyJWT, async (req, res) => {
+  let { filter, query, reportFilter = {} } = req.body;
+
+  let findQuery = {};
+
+  if (filter !== "all" && query) {
+    if (query.startsWith("@")) {
+      const username = query.substring(1);
+      const users = await User.find({
+        "personal_info.username": { $regex: username, $options: "i" }
+      }).select("_id");
+
+      const userIds = users.map(user => user._id);
+
+      if (userIds.length) {
+        findQuery["from"] = { $in: userIds };
+      } else {
+        return res.status(200).json({ totalDocs: 0 });
+      }
+    } else {
+      const posts = await Post.find({
+        title: { $regex: query, $options: "i" }
+      }).select("_id");
+
+      const postIds = posts.map(post => post._id);
+
+      if (postIds.length) {
+        findQuery["post_id"] = { $in: postIds };
+      } else {
+        return res.status(200).json({ totalDocs: 0 });
+      }
+    }
+  }
+
+  let statusFilters = [];
+  if (reportFilter.pending) statusFilters.push({ status: "pending" });
+  if (reportFilter.reviewed) statusFilters.push({ status: "reviewed" });
+  if (reportFilter.rejected) statusFilters.push({ status: "rejected" });
+
+  if (statusFilters.length > 0) {
+    findQuery["$or"] = statusFilters;
+  }
+
+  try {
+    const count = await Report.countDocuments(findQuery);
+    return res.status(200).json({ totalDocs: count });
+  } catch (err) {
+    console.error(err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+server.patch("/update-report-status", verifyJWT, async (req, res) => {
+  const { reportId, status } = req.body;
+
+  try {
+    const updatedReport = await Report.findByIdAndUpdate(
+      reportId,
+      { status },
+      { new: true }
+    ).populate('from', 'personal_info.username');
+
+    if (!updatedReport) {
+      return res.status(404).json({ error: "Report not found" });
+    }
+
+    return res.status(200).json({
+      message: `Report status updated to ${status}`,
+      report: updatedReport
+    });
+  } catch (err) {
+    console.error(err.message);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+server.delete("/delete-report/:reportId", verifyJWT, async (req, res) => {
+  const { reportId } = req.params;
+
+  try {
+    const deletedReport = await Report.findByIdAndDelete(reportId);
+
+    if (!deletedReport) {
+      return res.status(404).json({ error: "Report not found" });
+    }
+
+    return res.status(200).json({
+      message: "Report deleted successfully",
+      reportId: deletedReport._id
+    });
+  } catch (err) {
+    console.error(err.message);
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
