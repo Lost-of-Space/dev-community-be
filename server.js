@@ -140,7 +140,7 @@ server.post("/signin", (req, res) => {
   User.findOne({ "personal_info.email": email })
     .then((user) => {
       if (!user) {
-        return res.status(403).json({ "error": "Invalid Credentials." }) //Email not found
+        return res.status(403).json({ "error": "Invalid Credentials" }) //Email not found
       }
 
       if (!user.provider_auth) {
@@ -149,7 +149,7 @@ server.post("/signin", (req, res) => {
             return res.status(403).json({ "error": "Error occured while login please try again" })
           }
           if (!result) {
-            return res.status(403).json({ "error": "Invalid Credentials." }) //Incorrect password
+            return res.status(403).json({ "error": "Invalid Credentials" }) //Incorrect password
           } else {
             return res.status(200).json(formatDataToSend(user))
           }
